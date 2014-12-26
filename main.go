@@ -19,6 +19,12 @@ import (
 // help to gracfully shutdown server after all requests are done
 var waitGroup sync.WaitGroup
 
+func checkErr(err error) {
+	if err != nil {
+		panic(err)
+	}
+}
+
 // handleConn is used to handle each request individually.
 // if it is folder, it will return a list
 // if it is file, it will return its content
@@ -27,40 +33,33 @@ func handleConn(conn net.Conn) {
 	defer func() {
 		conn.Close()
 		waitGroup.Done()
+		if r := recover(); r != nil {
+			log.Println(r)
+		}
 	}()
 	// count one more request
 	waitGroup.Add(1)
 	// Read request data from Conn and change to Request struct
 	bufReader := bufio.NewReader(conn)
 	req, err := http.ReadRequest(bufReader)
-	if err != nil {
-		log.Println(err)
-		return
-	}
+	checkErr(err)
+
 	// Get Path from URL
 	path := req.URL.Path
 	// We assume to use current directory as source file server
 	curDir := http.Dir(".")
 	// Open file or folder following url path
 	target, err := curDir.Open(path)
-	if err != nil {
-		log.Println(err)
-		return
-	}
+	checkErr(err)
 	defer target.Close()
+
 	targetStat, err := target.Stat()
-	if err != nil {
-		log.Println(err)
-		return
-	}
+	checkErr(err)
 	// if directory, we shows a list of file/folder
 	// if file, we return content
 	if targetStat.IsDir() {
 		dirs, err := ioutil.ReadDir(targetStat.Name())
-		if err != nil {
-			log.Println(err)
-			return
-		}
+		checkErr(err)
 		for _, d := range dirs {
 			name := d.Name()
 			if d.IsDir() {
@@ -81,9 +80,9 @@ func serveFile(listener net.Listener) {
 		conn, err := listener.Accept()
 		if err != nil {
 			log.Println(err)
-			conn.Close()
 			continue
 		}
+		defer conn.Close()
 		go handleConn(conn)
 	}
 }
@@ -97,9 +96,7 @@ func closeServer(listener net.Listener) {
 
 func main() {
 	listener, err := net.Listen("tcp", ":8000")
-	if err != nil {
-		panic(err)
-	}
+	checkErr(err)
 	// Start file server
 	go serveFile(listener)
 	// Handle SIGINT and SIGTERM.
