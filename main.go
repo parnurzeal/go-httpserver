@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"log"
 	"net"
@@ -11,6 +10,8 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"regexp"
+	"strconv"
 	"sync"
 	"syscall"
 )
@@ -25,17 +26,34 @@ func checkErr(err error) {
 	}
 }
 
+func returnResp(conn net.Conn, statusCode string, statusText string, contentType string, content []byte) {
+	fmt.Fprintf(conn, "HTTP/1.0 "+statusCode+" "+statusText+"\n")
+	fmt.Fprintf(conn, "Content-Type: "+contentType+"\n")
+	fmt.Fprintf(conn, "Content-Length: "+strconv.Itoa(len(content))+"\n")
+	fmt.Fprintf(conn, "\n")
+	conn.Write(content)
+}
+
+func getContentType(name string) string {
+	match, _ := regexp.MatchString(`\w+.(jpg|JPG|JPEG|jpeg)`, name)
+	if match {
+		return "image/jpeg"
+	}
+	return "text/html"
+}
+
 // handleConn is used to handle each request individually.
 // if it is folder, it will return a list
 // if it is file, it will return its content
 func handleConn(conn net.Conn) {
 	// close conn and tell waitGroup decrease by one because a request is finished
 	defer func() {
-		conn.Close()
-		waitGroup.Done()
 		if r := recover(); r != nil {
 			log.Println(r)
+			returnResp(conn, "500", "Internal Server Error", "text/plain", []byte(r.(error).Error()))
 		}
+		waitGroup.Done()
+		conn.Close()
 	}()
 	// count one more request
 	waitGroup.Add(1)
@@ -43,14 +61,16 @@ func handleConn(conn net.Conn) {
 	bufReader := bufio.NewReader(conn)
 	req, err := http.ReadRequest(bufReader)
 	checkErr(err)
-
 	// Get Path from URL
 	path := req.URL.Path
-	// We assume to use current directory as source file server
-	curDir := http.Dir(".")
+	// We assume to use public/www directory as source file server
+	publicDir := http.Dir("public/www")
 	// Open file or folder following url path
-	target, err := curDir.Open(path)
-	checkErr(err)
+	target, err := publicDir.Open(path)
+	if err != nil {
+		returnResp(conn, "400", "Not Found", "text/plain", []byte(err.Error()))
+		return
+	}
 	defer target.Close()
 
 	targetStat, err := target.Stat()
@@ -58,8 +78,12 @@ func handleConn(conn net.Conn) {
 	// if directory, we shows a list of file/folder
 	// if file, we return content
 	if targetStat.IsDir() {
-		dirs, err := ioutil.ReadDir(targetStat.Name())
+		dirs, err := target.Readdir(0)
 		checkErr(err)
+		if len(dirs) == 0 {
+			returnResp(conn, "400", "Not Found", "text/plain", []byte("Empty folder"))
+			return
+		}
 		for _, d := range dirs {
 			name := d.Name()
 			if d.IsDir() {
@@ -69,7 +93,10 @@ func handleConn(conn net.Conn) {
 			fmt.Fprintf(conn, "<a href=\"%s\">%s</a>\n", url.String(), name)
 		}
 	} else {
-		io.Copy(conn, target)
+		content, err := ioutil.ReadAll(target)
+		checkErr(err)
+		contentType := getContentType(targetStat.Name())
+		returnResp(conn, "200", "OK", contentType, content)
 	}
 }
 
